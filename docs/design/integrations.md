@@ -247,7 +247,7 @@ error)`) with a `TransformerFunc` adapter and a configurable `DefaultTransformer
   `integrations/eventsource/Dockerfile` (the `BROKER` build-arg selects `cmd/<broker>`; built with
   the repo root as context since the module's `replace` reaches the root contract). A bridge is an
   outbound client (dials broker + service), and since the instrumentation landed it also serves
-  `/healthz`+`/readyz` on `--health-port` (8090, 0 disables) and exports `hippocampus.bridge.*`
+  `/livez`+`/readyz`+`/healthz` on `--health-port` (8090, 0 disables) and exports `hippocampus.bridge.*`
   metrics — so the image's lack of an EXPOSE is now a default rather than a property of the design.
   It has no default CMD — each broker's required flags are passed after the image name. Readiness
   deliberately covers the SERVICE and not the broker: a broker unreachable at startup exits the
@@ -301,7 +301,8 @@ github.com/fastbean-au/hippocampus => ../..`), which is what makes `github.com/g
   that **an edge must set `consolidation.minimumRetentionInDays` above the longest an event stays
   open**, or its own decay will forget in-flight events before the rules ever see them.
   Instrumented like the bridges (see `observability/` below): `hippocampus.ingestor.*` plus the
-  shared client RED metrics, and `/healthz`+`/readyz` naming which of its two ends is unreachable.
+  shared client RED metrics, and `/livez`+`/readyz`+`/healthz`, with `/readyz` naming which of its
+  two ends is unreachable.
 - `integrations/objectstore/` — the **object-storage agents** (TODO-2 item 107.3): the working half
   of the retention-controller mode, where the payload stays in a bucket and this store decides what
   survives. Its own Go module (module path

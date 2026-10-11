@@ -33,7 +33,7 @@ export function loadWizard() {
 
   const script =
     source.replace(boot, "\n") +
-    "\nglobalThis.__wizard = { PRESETS, TARGETS, FIELDS, state, value, setValue, applyPreset, validate, buildConfig };\n";
+    "\nglobalThis.__wizard = { PRESETS, TARGETS, FIELDS, state, value, setValue, applyPreset, validate, buildConfig, kubernetesManifests };\n";
   const context = vm.createContext({});
 
   vm.runInContext(script, context, { filename: "app.js" });

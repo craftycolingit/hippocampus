@@ -139,7 +139,7 @@ func waitForOK(t *testing.T, client *http.Client, url string) {
 }
 
 // TestRun_ServesAndShutsDown starts the full server via run on ephemeral ports, confirms the gRPC
-// listener and HTTP gateway (including its /healthz and /readyz endpoints) come up, then cancels
+// listener and HTTP gateway (including its /livez, /healthz and /readyz endpoints) come up, then cancels
 // the context and asserts run drains and returns nil - covering the whole bootstrap, serve, and
 // graceful-shutdown lifecycle in-process.
 func TestRun_ServesAndShutsDown(t *testing.T) {
@@ -150,7 +150,9 @@ func TestRun_ServesAndShutsDown(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, versionInfo{Version: "test"}) }()
 
-	// The gateway's /healthz proves the HTTP listener is up; /readyz proves the DB-aware probe runs.
+	// The gateway's /livez (and /healthz, its older name) proves the HTTP listener is up; /readyz
+	// proves the DB-aware probe runs.
+	waitForOK(t, http.DefaultClient, gwBase+"/livez")
 	waitForOK(t, http.DefaultClient, gwBase+"/healthz")
 	waitForOK(t, http.DefaultClient, gwBase+"/readyz")
 

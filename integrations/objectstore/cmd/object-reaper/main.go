@@ -291,6 +291,10 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("starting the health endpoints: %w", err)
 	}
 
+	// Fail /readyz from the moment the shutdown signal arrives, so this process is taken out of
+	// rotation while it finishes what it is doing; /livez keeps answering until it exits.
+	health.DrainWhenDone(ctx)
+
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), healthShutdownTimeout)
 		defer cancel()

@@ -37,7 +37,8 @@ are embedded in it, so the binary is the whole application.
 | `--version`      |         | Print the build version and exit.                        |
 
 Every flag is also settable as `HIPPOCAMPUS_WIZARD_<FLAG>` (for example
-`HIPPOCAMPUS_WIZARD_PORT=9000`). `/healthz` answers for container and load-balancer probes.
+`HIPPOCAMPUS_WIZARD_PORT=9000`). `/livez`, `/readyz` and `/healthz` answer for container and
+load-balancer probes; the wizard is static, so all three answer as soon as it is listening.
 
 ## What it produces
 

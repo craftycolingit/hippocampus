@@ -261,7 +261,8 @@ docker run ghcr.io/fastbean-au/hippocampus-object-reaper:latest --bucket payload
 The gateway's `/readyz` covers the **bucket only**. Its job is serving objects, and reinforcement is
 secondary — taking it out of a load balancer because a memory store is down would turn a lost
 decay-clock update into an outage for every reader. The reaper's covers **both** ends, because its
-job needs both.
+job needs both. Either fails `/readyz` from the moment it receives `SIGTERM`, while `/livez` (and
+`/healthz`, its older name) keeps answering until it exits.
 
 ## When the tap reinforces nothing
 
@@ -298,7 +299,7 @@ underscores - which is how a token or secret should be passed.
 | `--call-timeout-seconds`                    | `30`                              | bound on each RPC                                                                        |
 | `--bind-address`                            | all interfaces                    | interface the agent's own listener binds                                                 |
 | `--listen-tls-cert`, `--listen-tls-key`     | —                                 | serve that listener over HTTPS (both or neither)                                         |
-| `--health-port`                             | `8090` gateway, `8091` reaper     | port serving `/healthz` and `/readyz` (and `/metrics` with `--prometheus`); 0 disables   |
+| `--health-port`                             | `8090` gateway, `8091` reaper     | port serving `/livez`, `/readyz` and `/healthz` (and `/metrics` with `--prometheus`); 0 disables |
 | `--health-bind-address`                     | all interfaces                    | interface the health listener binds                                                      |
 | `--metrics`                                 | off                               | export metrics over OTLP/gRPC                                                            |
 | `--prometheus`                              | off                               | serve `/metrics` on the health port for Prometheus to scrape                             |

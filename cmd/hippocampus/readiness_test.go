@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/fastbean-au/hippocampus/db"
+	"github.com/fastbean-au/hippocampus/observability"
 )
 
 // pingStore is a db.Store stub that counts Ping calls and returns a configurable error, so the
@@ -117,6 +119,25 @@ func TestReadinessProbe_Handler(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 when the database is unreachable, got %d", rec.Code)
+	}
+}
+
+// TestReadinessProbe_DrainFailsReadiness pins the shutdown half of the lifecycle: once shutdown
+// begins /readyz reports 503 whatever the database says, so the instance is taken out of rotation
+// before its listeners close.
+func TestReadinessProbe_DrainFailsReadiness(t *testing.T) {
+	probe := newReadinessProbe(&pingStore{}, time.Second, 0)
+	probe.drain()
+
+	rec := httptest.NewRecorder()
+	probe.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 once draining, got %d", rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), observability.StatusShuttingDown) {
+		t.Errorf("expected the body to say %q, got %s", observability.StatusShuttingDown, rec.Body.String())
 	}
 }
 

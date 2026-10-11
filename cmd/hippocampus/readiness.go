@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -12,6 +13,7 @@ import (
 	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/fastbean-au/hippocampus/db"
+	"github.com/fastbean-au/hippocampus/observability"
 )
 
 // readinessProbe answers "can this instance actually serve traffic?" by pinging the database,
@@ -25,6 +27,10 @@ type readinessProbe struct {
 	db       db.Store
 	timeout  time.Duration
 	cacheTTL time.Duration
+
+	// draining is set by drain when shutdown begins and never cleared, so /readyz takes the
+	// instance out of rotation for the whole of its shutdown whatever the database says.
+	draining atomic.Bool
 
 	mu        sync.Mutex
 	lastErr   error
@@ -71,11 +77,25 @@ func (p *readinessProbe) check(ctx context.Context) error {
 	return err
 }
 
-// handler serves /readyz: 200 when the database is reachable, 503 otherwise. It is separate from
-// /healthz (pure process liveness), so a slow database makes the instance not-ready without the
-// orchestrator kill-looping the process.
+// drain marks the instance as shutting down: /readyz answers 503 from now on, while /livez keeps
+// answering 200 until the gateway closes.
+func (p *readinessProbe) drain() {
+	p.draining.Store(true)
+}
+
+// handler serves /readyz: 200 when the database is reachable, 503 otherwise or once shutdown has
+// begun. It is separate from /livez (pure process liveness), so a slow database makes the instance
+// not-ready without the orchestrator kill-looping the process.
 func (p *readinessProbe) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if p.draining.Load() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": observability.StatusShuttingDown})
+
+			return
+		}
+
 		if err := p.check(r.Context()); err != nil {
 			log.Debugf("readiness check failed: %s", err.Error())
 

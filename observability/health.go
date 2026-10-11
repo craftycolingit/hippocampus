@@ -9,12 +9,24 @@ import (
 	"net/http"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
 )
+
+// The lifecycle endpoint paths, shared by the service's gateway and every client daemon so a probe
+// written for one works on all of them.
+const (
+	LivenessPath     = "/livez"
+	ReadinessPath    = "/readyz"
+	LegacyHealthPath = "/healthz"
+)
+
+// StatusShuttingDown is the /readyz status of a process that has begun shutting down.
+const StatusShuttingDown = "shutting down"
 
 // Health endpoint defaults. The timeouts mirror the service's own gateway server, so a probe
 // endpoint cannot be held open indefinitely.
@@ -39,15 +51,15 @@ type HealthConfig struct {
 	// BindAddress restricts the interface; empty binds all of them.
 	BindAddress string
 
-	// Version is reported in the /healthz and /readyz bodies, as the service's own /healthz does.
+	// Version is reported in the /livez, /healthz and /readyz bodies, as the service's own do.
 	Version string
 
 	// Component names the binary in log lines and in the probe bodies.
 	Component string
 
 	// Checks are the readiness checks, keyed by the dependency name reported in the /readyz body.
-	// An empty map makes /readyz equivalent to /healthz - honest for a component with no
-	// dependencies, rather than a readiness endpoint that silently means nothing.
+	// An empty map makes /readyz equivalent to /livez until Drain is called - honest for a component
+	// with no dependencies, rather than a readiness endpoint that silently means nothing.
 	Checks map[string]Check
 
 	// CheckTimeout bounds one check; CacheTTL is how long a result is reused. Non-positive values
@@ -68,17 +80,27 @@ type HealthConfig struct {
 	MetricsHandler http.Handler
 }
 
-// HealthServer serves /healthz (process liveness) and /readyz (dependency readiness) for the
-// client-side daemons - the ingestor and the broker bridges - which otherwise listen on nothing at
-// all and so give an orchestrator nothing to probe.
+// HealthServer serves the Kubernetes lifecycle endpoints for the client-side daemons - the
+// ingestor, the broker bridges, the object gateway and reaper, and the MCP bridge over HTTP -
+// which otherwise give an orchestrator nothing to probe:
 //
-// The split matters and is the same one the service makes: /healthz answers "is this process
-// alive", so a Hippocampus instance being briefly unreachable must NOT make it fail and get the
-// container kill-looped; /readyz answers "can this process do its job right now", which for a
-// bridge or an ingestor means "can I reach both ends".
+//   - /livez answers "is this process alive", so a Hippocampus instance being briefly unreachable
+//     must NOT make it fail and get the container kill-looped. It is the liveness and startup
+//     probe's target.
+//   - /readyz answers "can this process do its job right now", which for a bridge or an ingestor
+//     means "can I reach both ends". It also fails from the moment Drain is called, so a shutting
+//     down process is taken out of rotation while it finishes its in-flight work.
+//   - /healthz is /livez under its older name. Kubernetes itself deprecated it in favour of the
+//     split pair, but every probe and script written before /livez existed points at it.
+//
+// The split is the same one the service makes on its gateway.
 type HealthServer struct {
 	cfg    HealthConfig
 	server *http.Server
+
+	// draining is set by Drain and never cleared: a process that has begun shutting down does not
+	// become ready again.
+	draining atomic.Bool
 
 	mu      sync.Mutex
 	results map[string]checkResult
@@ -112,8 +134,9 @@ func NewHealthServer(cfg HealthConfig) *HealthServer {
 func (h *HealthServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/healthz", h.liveness)
-	mux.HandleFunc("/readyz", h.readiness)
+	mux.HandleFunc(LivenessPath, h.liveness)
+	mux.HandleFunc(LegacyHealthPath, h.liveness)
+	mux.HandleFunc(ReadinessPath, h.readiness)
 
 	if h.cfg.MetricsHandler != nil {
 		mux.Handle(DefaultMetricsPath, h.cfg.MetricsHandler)
@@ -128,7 +151,7 @@ func (h *HealthServer) Handler() http.Handler {
 // running without probes is how a deployment ends up believing it has health checks it does not.
 func (h *HealthServer) Start() error {
 	if h.cfg.Port == 0 {
-		log.Warnf("%s: health endpoints disabled (port 0): no /healthz or /readyz for an orchestrator to probe", h.cfg.Component)
+		log.Warnf("%s: health endpoints disabled (port 0): no /livez, /readyz or /healthz for an orchestrator to probe", h.cfg.Component)
 
 		// Said separately, because the scrape endpoint is served from this listener: turning the
 		// probe port off silently takes the metrics with it, and a scraper's view of that is
@@ -161,7 +184,7 @@ func (h *HealthServer) Start() error {
 		}
 	}()
 
-	paths := "/healthz, /readyz"
+	paths := LivenessPath + ", " + ReadinessPath + ", " + LegacyHealthPath
 
 	if h.cfg.MetricsHandler != nil {
 		paths += ", " + DefaultMetricsPath
@@ -172,8 +195,29 @@ func (h *HealthServer) Start() error {
 	return nil
 }
 
-// Shutdown stops the listener. It is safe to call when Start was a no-op.
+// Drain marks the process as shutting down: /readyz answers 503 from now on, whatever its checks
+// say, while /livez keeps answering 200. A daemon calls it as soon as its shutdown signal arrives,
+// so a load balancer or a Service stops routing new work to it before its listeners close. It is
+// safe to call more than once, and on a server that was never started.
+func (h *HealthServer) Drain() {
+	if h.draining.Swap(true) {
+		return
+	}
+
+	log.Infof("%s: draining - /readyz now reports not ready", h.cfg.Component)
+}
+
+// DrainWhenDone calls Drain as soon as ctx is done. A daemon passes its signal context, so /readyz
+// starts failing the moment SIGTERM arrives rather than only once its serving loop has unwound and
+// it reaches Shutdown - which, for a daemon finishing in-flight work, can be several seconds later.
+func (h *HealthServer) DrainWhenDone(ctx context.Context) {
+	context.AfterFunc(ctx, h.Drain)
+}
+
+// Shutdown drains (see Drain) and stops the listener. It is safe to call when Start was a no-op.
 func (h *HealthServer) Shutdown(ctx context.Context) error {
+	h.Drain()
+
 	if h.server == nil {
 		return nil
 	}
@@ -182,7 +226,7 @@ func (h *HealthServer) Shutdown(ctx context.Context) error {
 }
 
 // liveness answers only "is this process running", so a probe never fails because a dependency is
-// briefly unreachable - that is what /readyz is for.
+// briefly unreachable - that is what /readyz is for. It serves both /livez and /healthz.
 func (h *HealthServer) liveness(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":    "ok",
@@ -192,8 +236,20 @@ func (h *HealthServer) liveness(w http.ResponseWriter, _ *http.Request) {
 }
 
 // readiness runs every check and reports 200 only when all of them pass, with a per-dependency
-// breakdown so a failing probe says WHICH end is unreachable rather than only that one is.
+// breakdown so a failing probe says WHICH end is unreachable rather than only that one is. Once
+// draining it answers 503 without running the checks: the answer can no longer change, and a
+// shutting-down process has no business adding load to its dependencies.
 func (h *HealthServer) readiness(w http.ResponseWriter, r *http.Request) {
+	if h.draining.Load() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status":    StatusShuttingDown,
+			"component": h.cfg.Component,
+			"version":   h.cfg.Version,
+		})
+
+		return
+	}
+
 	statuses := make(map[string]string, len(h.cfg.Checks))
 	ready := true
 

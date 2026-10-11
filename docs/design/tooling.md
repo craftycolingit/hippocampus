@@ -33,7 +33,7 @@ version and links here.
   `cd integrations/ingestor && go run ./cmd/ingestor --source-address localhost:50051 --target-address central:50051 --rules rules.json`
   (promotes completed events from an edge instance into a central one under a CEL rules file;
   `--check-rules` compiles the rules and exits, `--dry-run` judges without moving anything;
-  `--health-port` (8090) serves `/healthz`+`/readyz` and `--metrics` exports OTLP;
+  `--health-port` (8090) serves `/livez`+`/readyz`+`/healthz` and `--metrics` exports OTLP;
   `go test ./...` in that dir needs no service; see `docs/ingestor.md`)
 - Run the object-storage agents (separate module — run from its directory):
   `cd integrations/objectstore && go run ./cmd/object-gateway --bucket payloads --auth-token dev`
@@ -136,7 +136,7 @@ up --build` adds an all-in-one `grafana/otel-lgtm` service (Grafana `:3000`, OTL
   token-less ServiceAccount, Service) plus per-overlay `config.json` wired through a
   `configMapGenerator` (content-hashed → auto-rolls on edit). Secrets (DSN, signing key) and the
   consolidator/replica split are injected as `HIPPOCAMPUS_*` env overrides, not baked into the
-  ConfigMap; probes hit `/healthz`/`/readyz`; pods run non-root/read-only-rootfs. See
+  ConfigMap; probes hit `/livez` (startup, liveness)/`/readyz`, with a `preStop` sleep; pods run non-root/read-only-rootfs. See
   `deploy/k8s/README.md`
 - CI: `.github/workflows/ci.yaml` — build/vet/gofmt/tests (with postgres and mysql service
   containers so the `db/postgres_test.go` and `db/mysql_test.go` integration tests run instead

@@ -111,7 +111,7 @@ Every command carries these. The message-shaping flags are in
 | `--tls-cert`, `--tls-key`    | —                 | client certificate and key for mutual TLS (both or neither)                         |
 | `--tls-insecure-skip-verify` | off               | skip verifying the service certificate (development only)                           |
 | `--call-timeout-seconds`     | `30`              | bound on each RPC                                                                   |
-| `--health-port`              | `8090`            | port serving `/healthz` and `/readyz` (and `/metrics` with `--prometheus`); 0 disables |
+| `--health-port`              | `8090`            | port serving `/livez`, `/readyz` and `/healthz` (and `/metrics` with `--prometheus`); 0 disables |
 | `--health-bind-address`      | all interfaces    | interface the health listener binds                                                 |
 | `--log-level`                | `info`            | `trace`, `debug`, `info`, `warn` or `error`                                         |
 | `--version`                  | —                 | print the build version and exit                                                    |
@@ -694,7 +694,7 @@ store local and gitignored.
 
 ## Observability
 
-Every bridge serves `/healthz` and `/readyz` on `--health-port` (**8090 by default**; 0 disables,
+Every bridge serves `/livez`, `/readyz` and `/healthz` on `--health-port` (**8090 by default**; 0 disables,
 `--health-bind-address` restricts the interface) and exports OTEL telemetry over OTLP/gRPC:
 
 | Flag                         | Default                          | What it does                               |
@@ -721,8 +721,10 @@ a bridge is already asking for one operational port, and this is the same kind o
 `--health-port 0` turns the metrics off with the probes, which the bridge logs at startup rather than
 leaving to be discovered by a scraper reporting the process as down.
 
-`/healthz` is process liveness and never fails while the process runs; `/readyz` reports whether the
-Hippocampus instance the bridge writes to can actually serve:
+`/livez` is process liveness and never fails while the process runs (`/healthz` is the same endpoint
+under its older name); `/readyz` reports whether the Hippocampus instance the bridge writes to can
+actually serve, and fails from the moment the bridge receives `SIGTERM`, so it is taken out of
+rotation while it finishes its in-flight messages:
 
 ```json
 {

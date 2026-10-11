@@ -61,7 +61,7 @@ func RegisterCommonFlags(fs *pflag.FlagSet) {
 	fs.Bool("otlp-insecure", true, "connect to the collector without TLS")
 	fs.Int("metrics-interval-seconds", 0, "OTEL metric export interval (0 selects the SDK default)")
 	fs.String("metrics-group", "", "tenancy label stamped on this process's telemetry as a resource attribute; defaults to --group when that is set")
-	fs.Int("health-port", 8090, "port serving /healthz and /readyz (0 disables)")
+	fs.Int("health-port", 8090, "port serving /livez, /readyz and /healthz (0 disables)")
 	fs.String("health-bind-address", "", "interface for the health listener (empty binds all)")
 	fs.Bool("prometheus", false, "serve the metrics for Prometheus to scrape at /metrics on the health port, instead of (or as well as) pushing them with --metrics")
 }

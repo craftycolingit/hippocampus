@@ -228,7 +228,7 @@ func TestCORSMiddleware(t *testing.T) {
 	})
 
 	t.Run("non-v1 paths are untouched", func(t *testing.T) {
-		for _, path := range []string{"/healthz", "/readyz", "/ui", "/ui/config", "/auth/login"} {
+		for _, path := range []string{"/livez", "/healthz", "/readyz", "/ui", "/ui/config", "/auth/login"} {
 			served := false
 			handler := corsMiddleware([]string{allowedOrigin}, corsTestHandler(&served, http.StatusOK))
 

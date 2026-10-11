@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+
+	"github.com/fastbean-au/hippocampus/observability"
 )
 
 // The streamable-HTTP transport hands whoever reaches it the bridge's own service token - by default
@@ -127,7 +132,7 @@ func TestIsLoopbackAddress(t *testing.T) {
 func TestRun_HTTPTokenIsEnforcedEndToEnd(t *testing.T) {
 	server := newServer(newBridge(&fakeClient{}), "test")
 
-	handler := httpHandler(server, "s3cret")
+	handler := httpHandler(server, "s3cret", nil)
 
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -154,5 +159,71 @@ func TestServeHTTP_AllowUnauthenticatedServesAnExposedBind(t *testing.T) {
 
 	if err := serveHTTP(ctx, server, httpConfig{address: ":0", allowUnauthenticated: true}); err != nil {
 		t.Errorf("serveHTTP with --allow-unauthenticated-http = %v, want it served", err)
+	}
+}
+
+// TestHTTPHandler_ServesLifecycleProbesWithoutTheToken: a kubelet probe carries no credentials, so
+// /livez, /readyz and /healthz answer ahead of the token check while the MCP endpoint still demands
+// it, and /readyz reports the Hippocampus end of the bridge.
+func TestHTTPHandler_ServesLifecycleProbesWithoutTheToken(t *testing.T) {
+	server := newServer(newBridge(&fakeClient{}), "test")
+
+	var backendDown atomic.Bool
+
+	health := observability.NewHealthServer(observability.HealthConfig{
+		Component: "hippocampus-mcp",
+		CacheTTL:  time.Nanosecond,
+		Checks: map[string]observability.Check{
+			"hippocampus": func(context.Context) error {
+				if backendDown.Load() {
+					return errors.New("connection refused")
+				}
+
+				return nil
+			},
+		},
+	})
+
+	ts := httptest.NewServer(httpHandler(server, "s3cret", health))
+	defer ts.Close()
+
+	get := func(path string) int {
+		t.Helper()
+
+		res, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+
+		_ = res.Body.Close()
+
+		return res.StatusCode
+	}
+
+	for _, path := range []string{"/livez", "/readyz", "/healthz"} {
+		if code := get(path); code != http.StatusOK {
+			t.Errorf("GET %s with no token = %d, want 200", path, code)
+		}
+	}
+
+	if code := get("/"); code != http.StatusUnauthorized {
+		t.Errorf("GET / with no token = %d, want 401", code)
+	}
+
+	backendDown.Store(true)
+
+	if code := get("/readyz"); code != http.StatusServiceUnavailable {
+		t.Errorf("GET /readyz with the backend down = %d, want 503", code)
+	}
+
+	if code := get("/livez"); code != http.StatusOK {
+		t.Errorf("GET /livez with the backend down = %d, want 200", code)
+	}
+
+	health.Drain()
+	backendDown.Store(false)
+
+	if code := get("/readyz"); code != http.StatusServiceUnavailable {
+		t.Errorf("GET /readyz while draining = %d, want 503", code)
 	}
 }

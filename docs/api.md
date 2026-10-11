@@ -65,7 +65,7 @@ do; an unencoded slash splits the id across segments and no route matches it.
 
 `ReplaceMemoriesWithSummary`'s body maps directly to its `summary` field (a `Memory`), rather
 than the whole request, so a client posts a plain memory object to
-`/v1/events/{event_id}/summary` without a wrapper. `/healthz` and `/readyz` are always reachable
+`/v1/events/{event_id}/summary` without a wrapper. `/livez`, `/readyz` and `/healthz` are always reachable
 without authentication, for liveness/readiness probes (see [Health and readiness](#health-and-readiness)); every other path, including
 `/v1/openapi.json`, is subject to [Authentication](#authentication) when it is enabled.
 

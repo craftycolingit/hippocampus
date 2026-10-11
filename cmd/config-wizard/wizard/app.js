@@ -559,7 +559,7 @@ const STEPS = [
             label: "HTTP/JSON gateway port",
             type: "int",
             def: 0,
-            help: "0 disables the gateway. 8080 is conventional. The gateway also serves /healthz, /readyz, the OpenAPI description, and the web console — container and Kubernetes probes need it.",
+            help: "0 disables the gateway. 8080 is conventional. The gateway also serves /livez, /readyz, /healthz, the OpenAPI description, and the web console — container and Kubernetes probes need it.",
           },
           {
             key: "gateway.bindAddress",
@@ -1072,7 +1072,7 @@ const STEPS = [
             type: "bool",
             def: false,
             when: (s) => value(s, "tls.clientCaFile"),
-            help: "Refuses a connection that offers none — including /healthz and /readyz, since the handshake precedes the request.",
+            help: "Refuses a connection that offers none — including /livez, /readyz and /healthz, since the handshake precedes the request.",
           },
         ],
       },
@@ -2822,13 +2822,13 @@ function validate() {
     add(
       "error",
       "server",
-      "The gateway is disabled, but the container and Kubernetes probes generated here poll /healthz and /readyz over HTTP. Set gateway.port (8080 is conventional).",
+      "The gateway is disabled, but the container and Kubernetes probes generated here poll /livez and /readyz over HTTP. Set gateway.port (8080 is conventional).",
     );
   } else if (gatewayPort === 0) {
     add(
       "info",
       "server",
-      "The HTTP gateway is off, so /healthz, /readyz, the OpenAPI description, and the web console are unavailable — gRPC clients only.",
+      "The HTTP gateway is off, so /livez, /readyz, /healthz, the OpenAPI description, and the web console are unavailable — gRPC clients only.",
     );
   }
 
@@ -2898,7 +2898,7 @@ function validate() {
     add(
       "warn",
       "security",
-      "tls.requireClientCert applies to the gateway's /healthz and /readyz as well, since the handshake precedes the request. Give the probe client a certificate, or terminate TLS ahead of this listener.",
+      "tls.requireClientCert applies to the gateway's /livez, /readyz and /healthz as well, since the handshake precedes the request. Give the probe client a certificate, or terminate TLS ahead of this listener.",
     );
   }
 
@@ -3395,7 +3395,7 @@ function composeFile() {
 
   if (gatewayPort > 0) {
     lines.push(
-      `      - "${gatewayPort}:${gatewayPort}" # HTTP/JSON gateway, /healthz, /readyz, /ui`,
+      `      - "${gatewayPort}:${gatewayPort}" # HTTP/JSON gateway, /livez, /readyz, /ui`,
     );
   }
 
@@ -3641,6 +3641,12 @@ function kubernetesManifests() {
       : []),
   );
 
+  // The pod's shutdown budget: the preStop pause, then three shutdown phases each bounded by
+  // shutdown.timeoutSeconds - the same allowance the systemd unit's TimeoutStopSec makes.
+  const preStopSeconds = 5;
+  const shutdownSeconds = Number(val("shutdown.timeoutSeconds"));
+  const terminationGraceSeconds = Math.max(30, preStopSeconds + shutdownSeconds * 3);
+
   const container = (consolidates) => {
     const env = [];
 
@@ -3664,6 +3670,9 @@ function kubernetesManifests() {
     return [
       `      serviceAccountName: hippocampus`,
       `      automountServiceAccountToken: false`,
+      `      # The ${preStopSeconds}s preStop sleep plus the shutdown, which bounds each of its phases (gateway`,
+      `      # drain, gRPC graceful stop, telemetry flush) by shutdown.timeoutSeconds (${shutdownSeconds}s).`,
+      `      terminationGracePeriodSeconds: ${terminationGraceSeconds}`,
       `      securityContext:`,
       `        runAsNonRoot: true`,
       `        runAsUser: 1000`,
@@ -3686,22 +3695,35 @@ function kubernetesManifests() {
       ...(env.length > 0 ? [`          env:`, ...env] : []),
       ...(gatewayPort > 0
         ? [
+            `          startupProbe:`,
+            `            # Holds the other two probes off until the process is serving, however long the`,
+            `            # schema migrations take. 60 x 2s gives it two minutes.`,
+            `            httpGet:`,
+            `              path: /livez`,
+            `              port: http`,
+            `            periodSeconds: 2`,
+            `            failureThreshold: 60`,
             `          livenessProbe:`,
             `            # Pure process liveness — never restarts on a transient store outage.`,
             `            httpGet:`,
-            `              path: /healthz`,
+            `              path: /livez`,
             `              port: http`,
-            `            initialDelaySeconds: 5`,
             `            periodSeconds: 15`,
             `          readinessProbe:`,
-            `            # Database-aware: drains the pod when the store is unreachable.`,
+            `            # Database-aware: drains the pod when the store is unreachable, and from the`,
+            `            # moment shutdown begins.`,
             `            httpGet:`,
             `              path: /readyz`,
             `              port: http`,
-            `            initialDelaySeconds: 5`,
             `            periodSeconds: 10`,
           ]
         : []),
+      `          lifecycle:`,
+      `            # Keeps serving while the endpoint removal propagates, before SIGTERM arrives. A native`,
+      `            # sleep, since the image has no shell (Kubernetes 1.30+).`,
+      `            preStop:`,
+      `              sleep:`,
+      `                seconds: ${preStopSeconds}`,
       `          securityContext:`,
       `            allowPrivilegeEscalation: false`,
       `            readOnlyRootFilesystem: true`,
@@ -3979,7 +4001,7 @@ function nextSteps() {
 
   const probe =
     gatewayPort > 0
-      ? `curl -s http://localhost:${gatewayPort}/healthz`
+      ? `curl -s http://localhost:${gatewayPort}/livez`
       : `# no HTTP gateway configured; use a gRPC health probe (grpcurl grpc.health.v1.Health/Check)`;
 
   if (state.target === "compose") {

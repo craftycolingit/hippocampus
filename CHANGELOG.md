@@ -63,6 +63,19 @@ itself which service version it was built against.
 
 ## [Unreleased]
 
+### Added
+
+- **Kubernetes lifecycle endpoints on every component.** The service, broker bridges, ingestor,
+  object gateway and reaper, configuration wizard, and the MCP bridge's HTTP transport (which had no
+  probes) serve `/livez`, `/readyz` and `/healthz` (now an alias of `/livez`). `/readyz` fails from
+  `SIGTERM` on. See [Health and readiness](docs/configuration.md#health-and-readiness).
+
+### Changed
+
+- **The Kubernetes manifests probe `/livez`** for startup and liveness, pause 5 s in a `preStop`
+  `sleep`, and allow 45 s to terminate, in the overlays and the wizard's output. The `sleep` action
+  needs Kubernetes 1.30+. See [deploy/k8s](deploy/k8s/README.md).
+
 ## [0.52.1] - 2026-10-10
 
 ### Changed

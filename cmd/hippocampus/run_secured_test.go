@@ -248,7 +248,7 @@ func TestRun_SecuredChain(t *testing.T) {
 	})
 
 	t.Run("the gateway's probes need no token", func(t *testing.T) {
-		for _, path := range []string{"/healthz", "/readyz"} {
+		for _, path := range []string{"/livez", "/healthz", "/readyz"} {
 			if code := gatewayStatus(t, http.MethodGet, gwBase+path, "", ""); code != http.StatusOK {
 				t.Errorf("GET %s with no token = %d, want 200", path, code)
 			}

@@ -231,15 +231,16 @@ the store back under its target. They are published when `minimumRetentionInDays
 
 ### Health endpoints
 
-The ingestor serves `/healthz` and `/readyz` on `--health-port` (**8090 by default**; 0 disables).
+The ingestor serves `/livez`, `/readyz` and `/healthz` on `--health-port` (**8090 by default**; 0 disables).
 Running several client daemons on one host means giving each its own port. With `--prometheus` the
 same listener also serves `/metrics` — see [Metrics](#metrics) below — so turning the port off takes
 the metrics with it.
 
 | Endpoint | Answers | Fails when |
 | --- | --- | --- |
-| `/healthz` | is this process alive | never, while the process runs |
-| `/readyz` | can it do its job right now | either instance is unreachable or not serving |
+| `/livez` | is this process alive (the liveness and startup probe) | never, while the process runs |
+| `/readyz` | can it do its job right now | either instance is unreachable or not serving, or shutdown has begun |
+| `/healthz` | the same as `/livez`, under its older name | never, while the process runs |
 
 The split is load-bearing. A brief outage of either Hippocampus instance must **not** fail liveness,
 or an orchestrator will kill-loop a perfectly healthy ingestor every time the far end restarts.
@@ -567,7 +568,7 @@ need not appear in argv.
 | `--orphans`, `--orphan-age` | `ignore`, 1h | see above |
 | `--dry-run` | off | judge and report; move and delete nothing |
 | `--check-rules` | off | compile the rules, print a summary, exit |
-| `--health-port` | 8090 | `/healthz` and `/readyz` (0 disables) |
+| `--health-port` | 8090 | `/livez`, `/readyz` and `/healthz` (0 disables) |
 | `--health-bind-address` | all | interface for the probe listener |
 | `--metrics`, `--tracing` | off | OTLP/gRPC export |
 | `--prometheus` | off | serve the metrics at `/metrics` on the health port, for scraping |

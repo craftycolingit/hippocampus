@@ -1495,13 +1495,19 @@ func run(ctx context.Context, version versionInfo) error {
 			return fmt.Errorf("failed to register HTTP gateway: %w", err)
 		}
 
-		httpMux := http.NewServeMux()
-		httpMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		// The Kubernetes lifecycle endpoints: /livez (liveness and startup), /readyz (readiness,
+		// database-aware and failing from the start of shutdown), and /healthz, the older name for
+		// /livez that every probe written before it existed still points at.
+		liveness := func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "version": version})
-		})
-		httpMux.HandleFunc("/readyz", readiness.handler())
+		}
+
+		httpMux := http.NewServeMux()
+		httpMux.HandleFunc(observability.LivenessPath, liveness)
+		httpMux.HandleFunc(observability.LegacyHealthPath, liveness)
+		httpMux.HandleFunc(observability.ReadinessPath, readiness.handler())
 		// The OpenAPI document describing /v1. Enabled by default and served without a token - see
 		// openAPIHandler for why that reversed - with gateway.openapi.enabled available to remove
 		// the route outright for a deployment that wants nothing served there.
@@ -1697,7 +1703,9 @@ func run(ctx context.Context, version versionInfo) error {
 
 	// Mark not-serving before closing any listener, so load balancers and orchestrators drain this
 	// instance ahead of the shutdown rather than racing an in-flight request into a closing server.
-	// Stop the readiness updater first so it cannot flip the status back to SERVING.
+	// /readyz fails from here on, and the readiness updater is stopped first so it cannot flip the
+	// gRPC status back to SERVING.
+	readiness.drain()
 	close(stopReadiness)
 	<-readinessDone
 	hs.SetServingStatus("hippocampus", healthgrpc.HealthCheckResponse_NOT_SERVING)

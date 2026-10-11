@@ -32,7 +32,7 @@ hand every caller the store's size, capacity pressure and RPC rates, while gatin
 token would put it out of reach of most scrapers, and keeping it off the gateway is also what
 keeps a scrape out of `hippocampus.rpc.*`'s denominator for free. The client daemons take the
 other route (`HealthConfig.MetricsHandler`, `/metrics` on the probe port they already bind), since
-that port is already their private operational surface. `HealthServer` serves `/healthz` (liveness) and `/readyz` (a named
+that port is already their private operational surface. `HealthServer` serves `/livez` (liveness, also as `/healthz`) and `/readyz` (a named
 map of dependency checks, cached so a probe cannot become its own load), with `GRPCHealthCheck`
 probing `grpc.health.v1.Health` — chosen because it is exempt from the auth interceptor, touches
 no data, and is driven on the service side by its own database readiness, so "ready" means the far

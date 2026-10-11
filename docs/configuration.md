@@ -775,19 +775,23 @@ store keeps.
 
 ### Health and readiness
 
-The gateway exposes two probe endpoints, both always open (no token) so orchestrators can reach
-them:
+The gateway serves the Kubernetes lifecycle endpoints, all always open (no token) so
+orchestrators can reach them. Every other Hippocampus component that runs as a service serves the
+same three paths (see [Operations](operations.md#ports)), so one probe definition fits all of them.
 
-- `/healthz` — **liveness**: the process is up. It never touches the database, so a slow or
-  unreachable store does not make it fail; point a probe that _restarts_ the container here, so a
-  transient dependency outage does not trigger a restart loop that cannot fix it. Its JSON body
-  carries the running build's `version` (the same value `--version` prints), so an operator can tell
-  what is deployed.
-- `/readyz` — **readiness**: the process is up _and_ the database answers a ping. Returns `200`
-  when the store is reachable, `503` otherwise. Point load-balancer / service readiness probes
-  here so an instance whose database has become unreachable is drained rather than kept in
-  rotation while every RPC fails. The gRPC health service (`grpc.health.v1.Health`) reflects the
-  same signal, flipping between `SERVING` and `NOT_SERVING`.
+- `/livez` — **liveness**: the process is up. It never touches the database, so a slow or
+  unreachable store does not make it fail; point a probe that _restarts_ the container here, and the
+  startup probe too, so a transient dependency outage does not trigger a restart loop that cannot
+  fix it. Its JSON body carries the running build's `version` (the same value `--version` prints),
+  so an operator can tell what is deployed.
+- `/readyz` — **readiness**: the process is up, the database answers a ping, and shutdown has not
+  begun. Returns `200` when the store is reachable, `503` otherwise, and `503` with `"status":
+  "shutting down"` from the moment the process receives `SIGTERM`. Point load-balancer / service
+  readiness probes here so an instance whose database has become unreachable, or which is shutting
+  down, is drained rather than kept in rotation while every RPC fails. The gRPC health service
+  (`grpc.health.v1.Health`) reflects the same signal, flipping between `SERVING` and `NOT_SERVING`.
+- `/healthz` — the same as `/livez`, under the older name. Kubernetes itself deprecated `/healthz`
+  in favour of the split pair; it stays so a probe or script written against it keeps working.
 
 ```json
 "readiness": {
@@ -799,6 +803,14 @@ them:
 `readiness.pingTimeoutSeconds` bounds each database ping and `readiness.cacheSeconds` caches the
 result so a burst of probes collapses to at most one ping per window; both fall back to internal
 defaults (2 s and 3 s) when left at 0. The Docker image's `HEALTHCHECK` targets `/readyz`.
+
+On Kubernetes, the shipped overlays (`deploy/k8s`) and the wizard's generated manifests use all
+three probes: a `startupProbe` on `/livez` (so a slow schema migration is not killed by the
+liveness probe), a `livenessProbe` on `/livez`, and a `readinessProbe` on `/readyz`. They also set a
+5-second `preStop` sleep, so the pod keeps serving while its endpoint removal reaches every node
+before `SIGTERM` arrives, and a `terminationGracePeriodSeconds` that covers the pause plus three
+`shutdown.timeoutSeconds` phases. The native `sleep` action needs Kubernetes 1.30 or later, since
+the image has no shell to run `sleep` in.
 
 ### Version
 

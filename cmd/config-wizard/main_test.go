@@ -119,6 +119,23 @@ func TestAssetsCarryNoInlineCode(t *testing.T) {
 	}
 }
 
+// TestHandlerServesTheLifecycleEndpoints pins that the wizard answers the same probe paths as every
+// other component, so one probe definition fits all of them.
+func TestHandlerServesTheLifecycleEndpoints(t *testing.T) {
+	for _, path := range []string{"/livez", "/readyz", "/healthz"} {
+		recorder := httptest.NewRecorder()
+		handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", path, recorder.Code)
+		}
+
+		if !strings.Contains(recorder.Body.String(), `"status":"ok"`) {
+			t.Errorf("GET %s body = %q, want the health body", path, recorder.Body.String())
+		}
+	}
+}
+
 func TestHealthHandler(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	healthHandler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))

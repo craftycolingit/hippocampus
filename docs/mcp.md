@@ -137,6 +137,20 @@ hippocampus-mcp --address memory.internal:50051 --token "$HIPPO_TOKEN" \
 The inbound token is a shared secret, not a scheme with roles or expiry. Rotating it means a restart,
 and it carries no TLS: terminate TLS in front of the bridge before it leaves a trusted network.
 
+### Health endpoints
+
+The HTTP transport serves the same lifecycle endpoints as every other component, on the same
+listener and ahead of `--http-token`, since an orchestrator's probe carries no credentials. They
+disclose only the build and whether the service behind the bridge is reachable.
+
+| Endpoint | Answers | Fails when |
+| --- | --- | --- |
+| `/livez` | is this process alive (the liveness and startup probe) | never, while the process runs |
+| `/readyz` | can it do its job right now | the Hippocampus service is unreachable or not serving, or shutdown has begun |
+| `/healthz` | the same as `/livez`, under its older name | never, while the process runs |
+
+Over stdio there is no listener and nothing to probe: the MCP host owns the process.
+
 ## Connecting to the service
 
 ```sh

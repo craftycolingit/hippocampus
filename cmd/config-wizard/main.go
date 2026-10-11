@@ -150,8 +150,9 @@ func serve(server *http.Server, listener net.Listener) error {
 	return <-errs
 }
 
-// handler builds the whole HTTP surface: the embedded wizard assets, plus a /healthz endpoint for
-// container and load-balancer probes.
+// handler builds the whole HTTP surface: the embedded wizard assets, plus the lifecycle endpoints
+// every Hippocampus component serves for container and Kubernetes probes - /livez, /readyz, and
+// /healthz, the older name for /livez.
 func handler() http.Handler {
 	assets, err := fs.Sub(wizardAssets, "wizard")
 	if err != nil {
@@ -160,14 +161,18 @@ func handler() http.Handler {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/healthz", healthHandler())
+	health := healthHandler()
+
+	mux.Handle("/livez", health)
+	mux.Handle("/readyz", health)
+	mux.Handle("/healthz", health)
 	mux.Handle("/", securityHeaders(http.FileServer(http.FS(assets))))
 
 	return mux
 }
 
-// healthHandler reports process liveness. There is no dependency to check - the wizard is static -
-// so it answers unconditionally, carrying the build version so an operator can tell what is
+// healthHandler reports process liveness, and readiness with it. There is no dependency to check -
+// the wizard is static, so it can serve the moment it is listening - so it answers unconditionally, carrying the build version so an operator can tell what is
 // deployed (mirroring the service's own /healthz body).
 func healthHandler() http.Handler {
 	body := []byte(`{"status":"ok","version":"` + version + `"}`)

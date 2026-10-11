@@ -200,7 +200,8 @@ step that has neither.
 The binary is a foreground process: it runs until it receives `SIGINT`/`SIGTERM`, then shuts down
 gracefully (see [Graceful shutdown](#graceful-shutdown)). For anything past a manual run, put it
 under a process supervisor that restarts it on failure and starts it at boot — the same supervision
-the sections above assume. Point the supervisor's liveness check at `GET /healthz`. The examples
+the sections above assume. Point the supervisor's liveness check at `GET /livez` (`/healthz` is the
+same endpoint under its older name). The examples
 below run the compiled binary directly; the containerised path is instead a
 [Compose stack or Kubernetes overlay](#containers-and-kubernetes).
 
@@ -318,15 +319,15 @@ so two of these on one host need one of them moved:
 | Port   | Component                                                          | Serves                                                    | Set with                                  |
 | :----- | :----------------------------------------------------------------- | :-------------------------------------------------------- | :---------------------------------------- |
 | `50051` | the service                                                       | gRPC                                                      | `port`, `--port`                          |
-| `8080` | the service                                                        | the JSON gateway, `/ui`, `/healthz`, `/readyz` (off unless set; 8080 is the convention every shipped config uses) | `gateway.port`, `--gateway-port` |
+| `8080` | the service                                                        | the JSON gateway, `/ui`, `/livez`, `/readyz`, `/healthz` (off unless set; 8080 is the convention every shipped config uses) | `gateway.port`, `--gateway-port` |
 | `9464` | the service                                                        | `/metrics` for Prometheus, when `observability.prometheus.enabled` | `observability.prometheus.port`   |
-| `8090` | [MCP bridge](mcp.md) (`--transport http`)                          | the streamable-HTTP MCP endpoint, on loopback by default  | `--http-address`                          |
-| `8090` | [broker bridges](eventsource.md), [ingestor](ingestor.md)          | `/healthz`, `/readyz`, and `/metrics` with `--prometheus` | `--health-port`                           |
+| `8090` | [MCP bridge](mcp.md) (`--transport http`)                          | the streamable-HTTP MCP endpoint, on loopback by default, and `/livez`, `/readyz`, `/healthz` | `--http-address`                          |
+| `8090` | [broker bridges](eventsource.md), [ingestor](ingestor.md)          | `/livez`, `/readyz`, `/healthz`, and `/metrics` with `--prometheus` | `--health-port`                           |
 | `8088` | [object gateway](objectstore.md)                                   | the object routes                                         | `--listen-port`                           |
-| `8090` | object gateway                                                     | `/healthz`, `/readyz`, `/metrics`                         | `--health-port`                           |
+| `8090` | object gateway                                                     | `/livez`, `/readyz`, `/healthz`, `/metrics`               | `--health-port`                           |
 | `8089` | object reaper                                                      | the callback endpoint                                     | `--listen-port`                           |
-| `8091` | object reaper                                                      | `/healthz`, `/readyz`, `/metrics`                         | `--health-port`                           |
-| `8091` | [configuration wizard](config-wizard.md)                           | the wizard                                                | `--port`                                  |
+| `8091` | object reaper                                                      | `/livez`, `/readyz`, `/healthz`, `/metrics`               | `--health-port`                           |
+| `8091` | [configuration wizard](config-wizard.md)                           | the wizard, and `/livez`, `/readyz`, `/healthz`           | `--port`                                  |
 | `8082` | Swagger UI (compose `swagger` profile)                             | the API explorer                                          | the compose file                          |
 | `3000`, `4317` | `grafana/otel-lgtm` (compose `observability` profile)      | Grafana, and the OTLP collector                           | the compose file                          |
 
@@ -374,7 +375,7 @@ Three opt-in Compose profiles layer onto them, all off by default:
 These stacks are demonstration-shaped — no auth, no TLS, and a bundled database — so treat them as a
 starting point rather than a deployment. For anything long-running, give the service a `restart:`
 policy so a [fail-stop](#deployment-model-one-consolidating-instance-per-store) is followed by a
-clean restart, and point the healthcheck at `/healthz`.
+clean restart, and point the healthcheck at `/livez` (or `/readyz`, as the image's own does).
 
 ### Kubernetes
 
@@ -394,7 +395,9 @@ Both build on a shared `base/` (namespace, a token-less `ServiceAccount`, and th
 the pods, and receive secrets (the DSN, the signing key) and the consolidator/replica split as
 `HIPPOCAMPUS_*` env overrides rather than baked into the ConfigMap. Pods run non-root with a
 read-only root filesystem — the counterpart to the shipped systemd unit's sandbox — and probe
-`/healthz` (liveness) and `/readyz` (readiness, database-aware).
+`/livez` (startup and liveness) and `/readyz` (readiness, database-aware and failing from `SIGTERM`
+on), with a 5-second `preStop` sleep so a rollout drops no requests while the endpoint removal
+propagates. See [Health and readiness](configuration.md#health-and-readiness).
 
 The workload kinds differ for the reason the [deployment
 model](#deployment-model-one-consolidating-instance-per-store) gives: the SQLite overlay is a
@@ -1438,7 +1441,8 @@ written before versions were recorded at all.
 
 ## Graceful shutdown
 
-On `SIGINT`/`SIGTERM` the service shuts down in order: stop the HTTP gateway, drain in-flight gRPC
+On `SIGINT`/`SIGTERM` the service shuts down in order: report not-ready (`/readyz` answers `503`
+`shutting down` and the gRPC health status turns `NOT_SERVING`), stop the HTTP gateway, drain in-flight gRPC
 calls (`GracefulStop`, bounded by `shutdown.timeoutSeconds` — default 10 s — so a stuck call cannot
 hang shutdown, e.g. a long `Export`/`Transfer` gets to finish), stop the background sleep loop and
 stats ticker (waiting for any in-flight sleep cycle to drain), flush observability, then close the
@@ -1446,6 +1450,13 @@ database — which releases the Postgres/MySQL instance lock. A supervised resta
 fresh instance immediately. `shutdown.timeoutSeconds` bounds each of the gateway-drain, gRPC
 graceful-stop, and observability-flush phases; raise it for a slower store whose in-flight work
 legitimately needs longer to finish.
+
+Under Kubernetes, `SIGTERM` and the endpoint removal happen at the same time, so a pod that shut its
+listeners at once would refuse the requests still being routed to it until every node caught up.
+The shipped manifests close that window with a `preStop` sleep of 5 seconds ahead of the signal, and
+a `terminationGracePeriodSeconds` covering the sleep plus three `shutdown.timeoutSeconds` phases;
+raise the grace period with the timeout. The client-side components follow the same order: `/readyz`
+fails from `SIGTERM` on while they finish their in-flight work.
 
 ## Observability
 
@@ -1711,8 +1722,8 @@ The [ingestor](ingestor.md#observability), the [broker bridges](eventsource.md#o
 [object-storage agents](objectstore.md) are separate processes that dial a Hippocampus instance, and
 they are instrumented on the same model:
 `--metrics` exports over OTLP/gRPC, `--prometheus` serves the same metrics for scraping, and
-`--health-port` (**8090 by default**) serves `/healthz` (liveness) and `/readyz` (whether the
-instance they write to can actually serve). The scrape endpoint rides on that same health port at
+`--health-port` (**8090 by default**) serves `/livez` (liveness, also as `/healthz`) and `/readyz`
+(whether the instance they write to can actually serve, and not shutting down). The scrape endpoint rides on that same health port at
 `/metrics` rather than taking one of its own — these are processes already asking for one
 operational port they did not previously need, and everything served there is the same kind of
 thing. Turning `--health-port 0` off therefore takes the metrics with it, which is logged. Both
@@ -1822,15 +1833,16 @@ the method, status code, duration, and error, and the HTTP gateway logs `5xx` re
 periodic event/memory count log line.
 
 Identify the running build with `hippocampus --version`, the `version:` line at startup, or the
-`version` field in the `GET /healthz` body — all report the module version plus the VCS
+`version` field in the `GET /livez` (or `/healthz`) body — all report the module version plus the VCS
 revision/time embedded at build time. When observability is on, the same version is the OTEL
 `service.version` resource attribute.
 
 Health surfaces are unauthenticated and always reachable: the gRPC `grpc.health.v1.Health` service
-and the gateway's `GET /healthz` (**liveness** — process up, never touches the database) and
-`GET /readyz` (**readiness** — also pings the store, `503` when it is unreachable, and mirrored by
-the gRPC serving status). Point a restart/liveness probe at `/healthz` and a load-balancer/readiness
-probe at `/readyz` — see [Health and readiness](configuration.md#health-and-readiness). On the server
+and the gateway's `GET /livez` (**liveness** — process up, never touches the database; `/healthz` is
+the same endpoint under its older name) and `GET /readyz` (**readiness** — also pings the store,
+`503` when it is unreachable or once shutdown has begun, and mirrored by the gRPC serving status).
+Point a startup and a restart/liveness probe at `/livez` and a load-balancer/readiness probe at
+`/readyz` — see [Health and readiness](configuration.md#health-and-readiness). On the server
 drivers, review `storage.queryTimeoutSeconds` (see below) so a hung database fails operations
 promptly instead of tying up request goroutines and pooled connections.
 

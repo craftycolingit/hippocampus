@@ -29,6 +29,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/fastbean-au/hippocampus/dial"
+	"github.com/fastbean-au/hippocampus/observability"
 )
 
 // version is stamped into the MCP server's Implementation so an MCP host can display which build
@@ -158,10 +159,23 @@ func run(ctx context.Context) error {
 		return nil
 
 	case "http":
+		// A bridge served over HTTP is a long-running service an orchestrator has to probe, so it
+		// answers the same lifecycle endpoints as the other daemons, on its own listener: ready when
+		// the Hippocampus instance behind it can serve. Over stdio the host owns the process and
+		// there is nothing to probe.
+		health := observability.NewHealthServer(observability.HealthConfig{
+			Version:   version,
+			Component: "hippocampus-mcp",
+			Checks: map[string]observability.Check{
+				"hippocampus": observability.GRPCHealthCheck(conn),
+			},
+		})
+
 		return serveHTTP(ctx, server, httpConfig{
 			address:              viper.GetString("http-address"),
 			token:                viper.GetString("http-token"),
 			allowUnauthenticated: viper.GetBool("allow-unauthenticated-http"),
+			health:               health,
 		})
 
 	default:
@@ -169,11 +183,13 @@ func run(ctx context.Context) error {
 	}
 }
 
-// httpConfig is the streamable-HTTP transport's listener and its inbound authentication.
+// httpConfig is the streamable-HTTP transport's listener, its inbound authentication, and the
+// lifecycle endpoints served beside it (nil serves none).
 type httpConfig struct {
 	address              string
 	token                string
 	allowUnauthenticated bool
+	health               *observability.HealthServer
 }
 
 // serveHTTP serves the MCP server over the streamable-HTTP transport, shutting the listener down
@@ -201,7 +217,7 @@ func serveHTTP(ctx context.Context, server *mcp.Server, cfg httpConfig) error {
 
 	httpServer := &http.Server{
 		Addr:              httpAddress,
-		Handler:           httpHandler(server, cfg.token),
+		Handler:           httpHandler(server, cfg.token, cfg.health),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -218,6 +234,12 @@ func serveHTTP(ctx context.Context, server *mcp.Server, cfg httpConfig) error {
 	select {
 
 	case <-ctx.Done():
+		// Fail /readyz for the rest of the shutdown, so nothing new is routed here while the
+		// listener drains.
+		if cfg.health != nil {
+			cfg.health.Drain()
+		}
+
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
@@ -229,12 +251,27 @@ func serveHTTP(ctx context.Context, server *mcp.Server, cfg httpConfig) error {
 }
 
 // httpHandler is the streamable-HTTP handler, behind the inbound token when one is configured.
-func httpHandler(server *mcp.Server, token string) http.Handler {
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+// The lifecycle endpoints, when health is non-nil, are served ahead of the token check: a kubelet
+// probe carries no credentials, and they disclose only the build and whether the instance behind
+// this bridge is reachable - the same as the service's own open /livez and /readyz.
+func httpHandler(server *mcp.Server, token string, health *observability.HealthServer) http.Handler {
+	handler := requireBearer(token, mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return server
-	}, nil)
+	}, nil))
 
-	return requireBearer(token, handler)
+	if health == nil {
+		return handler
+	}
+
+	probes := health.Handler()
+
+	mux := http.NewServeMux()
+	mux.Handle(observability.LivenessPath, probes)
+	mux.Handle(observability.ReadinessPath, probes)
+	mux.Handle(observability.LegacyHealthPath, probes)
+	mux.Handle("/", handler)
+
+	return mux
 }
 
 // requireBearer refuses any request not carrying "Authorization: Bearer <token>", comparing in

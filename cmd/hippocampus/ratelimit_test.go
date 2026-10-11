@@ -265,6 +265,7 @@ func TestRateLimitArrivalMiddlewareIgnoresSupportPaths(t *testing.T) {
 	}))
 
 	paths := []string{
+		"/livez",
 		"/healthz",
 		"/readyz",
 		"/ui",
@@ -326,7 +327,7 @@ func TestOpenAPIDocumentIsRateLimitedButNotMetered(t *testing.T) {
 		t.Errorf("isRateLimitedPath(%q) = false, expected the document to be under the arrival ceiling", openAPIPath)
 	}
 
-	for _, path := range []string{"/healthz", "/readyz", "/ui", "/ui/config"} {
+	for _, path := range []string{"/livez", "/healthz", "/readyz", "/ui", "/ui/config"} {
 		if isRateLimitedPath(path) {
 			t.Errorf("isRateLimitedPath(%q) = true, expected support paths to stay unthrottled", path)
 		}

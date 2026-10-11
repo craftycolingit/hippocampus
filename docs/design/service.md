@@ -110,19 +110,29 @@ is positive it also registers `contract.RegisterHippocampusHandlerServer` (the g
 `hippocampus.pb.gw.go` reverse proxy) on a `runtime.NewServeMux()` and serves it over HTTP (TLS
 via `ListenAndServeTLS` when `tls.enabled`) — calling straight into the same `hipo` server
 instance, not dialing back over gRPC — alongside a static `/v1/openapi.json` (the embedded
-`contract.SwaggerJSON`) and an unauthenticated `/healthz`. Because the gateway calls `hipo`
+`contract.SwaggerJSON`) and the unauthenticated lifecycle endpoints `/livez`, `/readyz` and `/healthz`. Because the gateway calls `hipo`
 directly and never runs the gRPC interceptor chain, the mux is always wrapped in
 `hipo.HTTPMiddlewareBlockWhenPurgeInProgress` (the HTTP counterpart to
-`InterceptorBlockWhenPurgeInProgress`; open paths `/healthz` and `/v1/openapi.json`, else 503
+`InterceptorBlockWhenPurgeInProgress`; open paths the three probes and `/v1/openapi.json`, else 503
 while a purge runs), which is in turn wrapped in `httpLoggingMiddleware` (the gateway's counterpart
 to `InterceptorLogger`, since the gateway never runs the gRPC chain — logs 5xx at Warn, else at
 Debug, via an intercepting status recorder, and adds the `client_id` from the request context
 when present); when `auth.enabled`, that is in turn wrapped in
 `auth.HTTPMiddleware` (outermost, so unauthenticated requests are rejected first — and, like the
 gRPC interceptor, stashing the verified claims on the request context on success) except
-`/healthz`. The gateway is shut down before the gRPC
-server on SIGINT/SIGTERM; `shutdown.timeoutSeconds` (default 10) bounds each phase (gateway drain,
-gRPC graceful stop, observability flush). All configuration flows through viper keys matching `config.json`
+the probes. On SIGINT/SIGTERM `/readyz` turns 503 (`shutting down`) and the gRPC health status
+`NOT_SERVING`, then the gateway is shut down before the gRPC server; `shutdown.timeoutSeconds`
+(default 10) bounds each phase (gateway drain, gRPC graceful stop, observability flush).
+
+The lifecycle endpoints (TODO-3 item 181) follow Kubernetes' own naming: `/livez` for liveness and
+the startup probe, `/readyz` for readiness. `/healthz` stays as an alias of `/livez` rather than
+being removed, because every probe, compose healthcheck and script written before `/livez` existed
+names it, and Kubernetes kept its own `/healthz` for the same reason. The window between `SIGTERM`
+and every node's proxy dropping the endpoint is closed in the manifests, by a 5-second `preStop`
+`sleep` action, not by an in-process delay: the image has no shell, the native action needs nothing
+from the binary, and a configurable drain delay would have been one more key on every component for
+a problem only an orchestrator has. Failing `/readyz` at `SIGTERM` still matters for anything that
+probes rather than watching endpoints - an external load balancer, the topology prober. All configuration flows through viper keys matching `config.json`
 structure. Instrumentation elsewhere uses the global OTEL providers
 (`hippocampus/telemetry.go`, `stats/stats.go`), so it stays no-op-safe whether or not
 observability is enabled. The domain metrics defined in `hippocampus/telemetry.go` (counters,

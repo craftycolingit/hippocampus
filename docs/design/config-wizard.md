@@ -9,7 +9,7 @@ version and links here.
 `cmd/config-wizard/` — the configuration and deployment wizard: a second `package main` in the
 root module (`main.go` plus the embedded `wizard/` assets). The Go side is a static file server
 and nothing else — embedded `index.html`/`app.js`/`styles.css` behind a strict CSP (no
-`unsafe-inline`, `connect-src 'none'`), plus `/healthz`. All the work is in `wizard/app.js`: a
+`unsafe-inline`, `connect-src 'none'`), plus `/livez`, `/readyz` and `/healthz`. All the work is in `wizard/app.js`: a
 schema (`STEPS` → cards → fields, indexed into `FIELDS`) that drives the form, the validation, and
 the generated artefacts from one source. It builds a `config.json` plus an `HIPPOCAMPUS_*`
 environment file for the secret-typed keys, and a Compose file / Kubernetes manifests / systemd

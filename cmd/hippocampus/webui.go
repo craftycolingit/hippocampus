@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
+
+	"github.com/fastbean-au/hippocampus/observability"
 )
 
 // UIConfig is the front-channel configuration the embedded console needs to start an OIDC login. It
@@ -141,11 +144,10 @@ func webUISecurityHeaders(cfg UIConfig, next http.Handler) http.Handler {
 // page 401s its own stylesheet, and that presents as a broken console rather than as an auth error.
 // TestEveryEmbeddedAssetIsServedAndOpen is what makes that impossible to get wrong.
 func middlewareOpenPaths(serverLogin bool) (authPaths []string, purgePaths []string) {
-	authPaths = append([]string{"/healthz", "/readyz", openAPIPath, "/ui/config"}, webUIAssetPaths...)
-	purgePaths = append(
-		[]string{"/healthz", "/readyz", openAPIPath, "/ui/config"},
-		webUIAssetPaths...,
-	)
+	probes := []string{observability.LivenessPath, observability.ReadinessPath, observability.LegacyHealthPath}
+
+	authPaths = append(append(probes, openAPIPath, "/ui/config"), webUIAssetPaths...)
+	purgePaths = append(append(slices.Clone(probes), openAPIPath, "/ui/config"), webUIAssetPaths...)
 
 	if serverLogin {
 		login := []string{"/auth/login", "/auth/callback", "/auth/refresh", "/auth/logout"}

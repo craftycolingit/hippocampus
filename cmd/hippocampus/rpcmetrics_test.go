@@ -250,6 +250,7 @@ func TestIsRPCPath(t *testing.T) {
 		"/v1/memories/abc":  true,
 		"/v1/sleep/preview": true,
 		"/v1/openapi.json":  false,
+		"/livez":            false,
 		"/healthz":          false,
 		"/readyz":           false,
 		"/ui":               false,

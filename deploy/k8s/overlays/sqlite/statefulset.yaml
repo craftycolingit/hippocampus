@@ -35,6 +35,9 @@ spec:
     spec:
       serviceAccountName: hippocampus
       automountServiceAccountToken: false
+      # The 5s preStop sleep plus the service's shutdown, which bounds each of its phases (gateway
+      # drain, gRPC graceful stop, telemetry flush) by shutdown.timeoutSeconds (10s by default).
+      terminationGracePeriodSeconds: 45
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -53,25 +56,40 @@ spec:
               containerPort: 8080
             - name: metrics
               containerPort: 9464
+          startupProbe:
+            # Holds the other two probes off until the process is serving, however long the schema
+            # migrations or the storage lock take - so liveness needs no initial delay that a slow
+            # start could outrun. 60 x 2s gives it two minutes.
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 60
           livenessProbe:
             # Pure process liveness — never restarts on a transient store outage.
             httpGet:
-              path: /healthz
+              path: /livez
               port: http
-            initialDelaySeconds: 5
             periodSeconds: 15
             timeoutSeconds: 3
             failureThreshold: 3
           readinessProbe:
             # Database-aware: pulls the pod out of the Service's endpoints if the store is
-            # unreachable, without restarting it.
+            # unreachable, without restarting it, and from the moment shutdown begins.
             httpGet:
               path: /readyz
               port: http
-            initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
+          lifecycle:
+            # Keeps serving while the endpoint removal propagates to every node's proxy and to the
+            # load balancers, before SIGTERM arrives. /readyz fails from SIGTERM on and the shutdown
+            # drains in-flight RPCs. A native sleep, since the image has no shell (Kubernetes 1.30+).
+            preStop:
+              sleep:
+                seconds: 5
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

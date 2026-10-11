@@ -56,14 +56,17 @@ gateway). To poke it from your laptop:
 
 ```sh
 kubectl -n hippocampus port-forward svc/hippocampus 8080:8080
-curl -s localhost:8080/healthz
+curl -s localhost:8080/livez
 ```
 
 No overlay applies an `Ingress`. Expose the gRPC and/or HTTP ports through whatever your cluster
 already uses (an `Ingress`/`Gateway`, a `LoadBalancer` Service, a mesh). `examples/ingress.yaml` is a
 starting point for ingress-nginx with cert-manager, and its header lists what to do before exposing
-anything. The gateway's `/healthz` (liveness) and `/readyz` (readiness, database-aware) are the
-probe endpoints.
+anything. The gateway's `/livez` (the startup and liveness probes) and `/readyz` (readiness,
+database-aware, and failing from `SIGTERM` on) are the probe endpoints; `/healthz` answers as
+`/livez` for older probes. Every workload also pauses 5 seconds in a `preStop` `sleep` before it
+receives `SIGTERM`, so a rollout drops no requests while its endpoint removal propagates. The native
+`sleep` action needs Kubernetes 1.30 or later; on an older cluster, delete the `lifecycle` block.
 
 ## The two models, and why the workload kind differs
 

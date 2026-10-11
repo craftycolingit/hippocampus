@@ -110,6 +110,118 @@ func TestReadinessWithNoChecks(t *testing.T) {
 	}
 }
 
+// TestLivezAndHealthzAreTheSameProbe pins the Kubernetes naming: /livez is the liveness endpoint,
+// and /healthz stays as its older name so a probe written before /livez existed keeps working.
+func TestLivezAndHealthzAreTheSameProbe(t *testing.T) {
+	h := NewHealthServer(HealthConfig{
+		Component: "hippocampus-ingestor",
+		Version:   "v1.2.3",
+		Checks: map[string]Check{
+			"source": func(context.Context) error { return errors.New("connection refused") },
+		},
+	})
+
+	for _, path := range []string{LivenessPath, LegacyHealthPath} {
+		code, body := probe(t, h, path)
+
+		if code != http.StatusOK {
+			t.Errorf("expected %s to be 200 with a dead dependency, got %d", path, code)
+		}
+
+		if body["status"] != "ok" || body["version"] != "v1.2.3" || body["component"] != "hippocampus-ingestor" {
+			t.Errorf("unexpected %s body: %+v", path, body)
+		}
+	}
+}
+
+// TestDrainFailsReadinessButNotLiveness is the shutdown half of the lifecycle: from the moment a
+// daemon begins shutting down, /readyz must take it out of rotation - without running its checks -
+// while /livez keeps answering, or the orchestrator kills it before it has drained.
+func TestDrainFailsReadinessButNotLiveness(t *testing.T) {
+	var calls atomic.Int32
+
+	h := NewHealthServer(HealthConfig{
+		Version: "v1.2.3",
+		Checks: map[string]Check{
+			"hippocampus": func(context.Context) error {
+				calls.Add(1)
+
+				return nil
+			},
+		},
+	})
+
+	if code, _ := probe(t, h, ReadinessPath); code != http.StatusOK {
+		t.Fatalf("expected ready before draining, got %d", code)
+	}
+
+	h.Drain()
+	h.Drain()
+
+	code, body := probe(t, h, ReadinessPath)
+
+	if code != http.StatusServiceUnavailable || body["status"] != StatusShuttingDown {
+		t.Errorf("expected 503 %q once draining, got %d %+v", StatusShuttingDown, code, body)
+	}
+
+	if body["version"] != "v1.2.3" {
+		t.Errorf("expected the draining body to carry the version, got %+v", body)
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("expected the checks not to run once draining, ran %d times", got)
+	}
+
+	for _, path := range []string{LivenessPath, LegacyHealthPath} {
+		if code, _ := probe(t, h, path); code != http.StatusOK {
+			t.Errorf("expected %s to stay 200 while draining, got %d", path, code)
+		}
+	}
+}
+
+// TestDrainWhenDoneFollowsTheSignalContext pins that cancelling the signal context is enough to
+// fail readiness, without waiting for the daemon to reach Shutdown.
+func TestDrainWhenDoneFollowsTheSignalContext(t *testing.T) {
+	h := NewHealthServer(HealthConfig{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	h.DrainWhenDone(ctx)
+
+	if code, _ := probe(t, h, ReadinessPath); code != http.StatusOK {
+		t.Fatalf("expected ready before the context is cancelled, got %d", code)
+	}
+
+	cancel()
+
+	deadline := time.Now().Add(2 * time.Second)
+
+	for !h.draining.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("expected cancelling the context to drain the server")
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+
+	if code, _ := probe(t, h, ReadinessPath); code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 once the context is cancelled, got %d", code)
+	}
+}
+
+// TestShutdownDrains pins that Shutdown on its own is enough to fail readiness, so a daemon that
+// never calls Drain still stops reporting ready on its way out.
+func TestShutdownDrains(t *testing.T) {
+	h := NewHealthServer(HealthConfig{})
+
+	if err := h.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %s", err)
+	}
+
+	if code, _ := probe(t, h, ReadinessPath); code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 after Shutdown, got %d", code)
+	}
+}
+
 // TestReadinessCachesResults is what stops a probe becoming its own load on the thing it probes:
 // Kubernetes liveness plus readiness plus a load balancer can all land inside one window.
 func TestReadinessCachesResults(t *testing.T) {
@@ -218,15 +330,17 @@ func TestStartAndShutdown(t *testing.T) {
 
 	defer func() { _ = h.Shutdown(context.Background()) }()
 
-	res, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
-	if err != nil {
-		t.Fatalf("probing the listener: %s", err)
-	}
+	for _, path := range []string{LivenessPath, ReadinessPath, LegacyHealthPath} {
+		res, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d%s", port, path))
+		if err != nil {
+			t.Fatalf("probing %s on the listener: %s", path, err)
+		}
 
-	defer func() { _ = res.Body.Close() }()
+		_ = res.Body.Close()
 
-	if res.StatusCode != http.StatusOK {
-		t.Errorf("expected 200 from the live listener, got %d", res.StatusCode)
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 from %s on the live listener, got %d", path, res.StatusCode)
+		}
 	}
 }
 
